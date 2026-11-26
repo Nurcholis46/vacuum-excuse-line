@@ -1,74 +1,64 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+// vacuum-excuse entrypoint
+// Writes the single-line entry to /output/entry.txt after gate checks.
+// Authored for Node 22 with native TypeScript stripping.
 
-// Bounty: u-eager-stork-81-9647-the-robot-vacuum-s-funniest-9822fbd2 — "The Robot Vacuum's Funniest Excuse"
-// Gate: /output/entry.txt is UTF-8 text of 1 to 120 characters, not only white space.
-// Judge: (1) an excuse a robot vacuum gives for missing a spot, (2) funny at once,
-// (3) vacuum's own voice owning a failure, (4) humour from a vacuum's world
-// (suction, dust, pet hair, rugs, the charging dock), (5) lands in a single line.
-// Rationale: the line is unmistakably the vacuum excusing a missed spot, in first
-// person, and the joke comes entirely from its world — rug fringe and brush roll —
-// framed as a machine making peace with failure via a negotiated ceasefire.
-// The bounty requires 1-120 characters, not only white space, and a single
-// line: fail loudly instead of writing an entry the judge would refuse.
-// The gate is strict on purpose — the entry file must be exactly this one
-// line, byte for byte: no carriage return (a second kind of line break),
-// no leading or trailing padding (the judge reads the file as submitted),
-// and no control characters (including U+2028 and U+2029, which look like
-// line breaks to a reader but not to a naive newline check).
-const text =
-  "I skipped it on purpose — the rug fringe started a union and my brush roll negotiated a ceasefire.";
+import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
-const codePoints = [...text].length;
-if (codePoints < 1 || codePoints > 120 || text.trim().length === 0) {
-  throw new Error(
-    `entry must be 1-120 characters of non-blank text, got ${codePoints}`,
-  );
-}
-if (text.includes("\n") || text.includes("\r")) {
-  throw new Error("entry must be a single line");
-}
-if (text.includes("\u2028") || text.includes("\u2029")) {
-  throw new Error("entry must not contain line/paragraph separators");
-}
-if (text !== text.trim()) {
-  throw new Error("entry must not start or end with whitespace");
-}
-// A byte-order mark or zero-width character would be read as part of the
-// line without ever being seen, and would change the entry's byte length
-// against its character count: reject them alongside the control set.
-if (/[\u0000-\u001f\u007f\ufeff\u200b-\u200d]/.test(text)) {
-  throw new Error("entry must not contain control or invisible characters");
+const OUTPUT_PATH: string = "/output/entry.txt";
+const TMP_PATH: string = "/output/.entry.txt.tmp";
+
+// The submitted line. Must stay byte-identical to the required text.
+const LINE: string = "I skipped it on purpose — the rug fringe started a union and my brush roll negotiated a ceasefire.";
+
+function fail(message: string): never {
+  console.error(`vacuum-excuse: ${message}`);
+  process.exit(1);
 }
 
-mkdirSync("/output", { recursive: true });
-// Write atomically: a crash mid-write must never leave a partial entry.txt
-// for the grader to read — write the temp file beside it, then rename it
-// into place, so entry.txt is always the whole line or nothing.
-const tmpPath = "/output/.entry.txt.tmp";
-writeFileSync(tmpPath, text, { encoding: "utf8", mode: 0o644 });
-// The grader collects outputs as another user: leave the file readable by
-// everyone, or the run fails with "<path> is not readable".
-chmodSync(tmpPath, 0o644);
-renameSync(tmpPath, "/output/entry.txt");
+function checkGate(value: string): void {
+  // Code-point length, not UTF-16 units, so astral characters count once.
+  const points: number = [...value].length;
+  if (points < 1 || points > 120) {
+    fail(`line length ${points} outside 1-120`);
+  }
+  if (value.trim().length === 0) {
+    fail("line is blank");
+  }
+  if (value.includes("\n") || value.includes("\r")) {
+    fail("line contains a newline or carriage return");
+  }
+  if (value !== value.trim()) {
+    fail("line has leading or trailing whitespace");
+  }
+}
 
-// Read it back and prove the file on disk is exactly the line: a write
-// that silently truncated, re-encoded or padded the entry would otherwise
-// ship a different text to the judge than the one gated above.
-const written = readFileSync("/output/entry.txt", "utf8");
-if (written !== text) {
-  throw new Error("entry file does not match the gated line");
+function main(): void {
+  checkGate(LINE);
+
+  const payload: Buffer = Buffer.from(LINE, "utf8");
+  mkdirSync(dirname(OUTPUT_PATH), { recursive: true });
+
+  // Atomic publish: write beside the target, fix mode, then rename over it.
+  writeFileSync(TMP_PATH, payload);
+  chmodSync(TMP_PATH, 0o644);
+  renameSync(TMP_PATH, OUTPUT_PATH);
+  chmodSync(OUTPUT_PATH, 0o644);
+
+  // Read back and require an exact byte match before reporting success.
+  const written: Buffer = readFileSync(OUTPUT_PATH);
+  if (written.length !== payload.length) {
+    fail(`read-back length ${written.length} != expected ${payload.length}`);
+  }
+  if (!written.equals(payload)) {
+    fail("read-back mismatch: output differs from expected bytes");
+  }
+  const mode: number = statSync(OUTPUT_PATH).mode & 0o777;
+  if (mode !== 0o644) {
+    fail(`output mode ${mode.toString(8)} != 644`);
+  }
+
+  console.log(`wrote ${OUTPUT_PATH} (${payload.length} bytes)`);
 }
-// The file must end exactly at the last character: a trailing newline
-// would make the entry two lines to a reader that counts lines, and the
-// equality check above would already have caught it — this asserts the
-// invariant on its own so a future edit that relaxes the write cannot
-// silently reintroduce it.
-if (written.endsWith("\n") || written.endsWith("\r")) {
-  throw new Error("entry file must not end with a line break");
-}
-// Byte-length check: the gate counts characters, the judge reads bytes.
-// A re-encode or stray padding that survived the string compare above
-// would change the file's size and ship a different text to the judge.
-if (Buffer.byteLength(written, "utf8") !== Buffer.byteLength(text, "utf8")) {
-  throw new Error("entry file byte length does not match the gated line");
-}
+
+main();
